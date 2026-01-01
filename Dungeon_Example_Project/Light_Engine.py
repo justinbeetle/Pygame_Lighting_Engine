@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
 import copy
-import math as meth
+import math
 import random
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Union
 
 import numpy as np
 import pygame
@@ -36,6 +36,23 @@ for y in range(10):
         tile_textures.append(get_tile(x, y))
 
 
+class Point(NamedTuple):
+    x: int
+    y: int
+
+
+class FloatPoint(NamedTuple):
+    x: float
+    y: float
+
+
+class CornerCoords(NamedTuple):  # This effective duplicates a rect
+    top_right: Point
+    top_left: Point
+    bottom_left: Point
+    bottom_right: Point
+
+
 class Light:
     def __init__(
         self,
@@ -59,202 +76,202 @@ class Light:
         self.size_px = radius_px * 2
         self.radius_px = radius_px
         self.render_surface = pygame.Surface((self.size_px, self.size_px))
+        self.color = color
         self.intensity = intensity
         self.angle = angle_deg
-        self.angle_width = angle_width_deg
-        self.point = is_point
-        self.pixel_shader_surf = self.pixel_shader(
-            np.full((self.size_px, self.size_px, 3), (color.r, color.g, color.b), dtype=np.uint8)
-        )
+        self.angle_width_deg = angle_width_deg
+        self.is_point = is_point
+        self.pixel_shader_surf = self.pixel_shader()
         self.render_surface.set_colorkey((0, 0, 0))
 
-    def get_intersection(self, p1, p2):
-        dx = p2[0] - p1[0]
-        dy = p2[1] - p1[1]
+    def get_intersection(self, p1: Point, p2: Point) -> FloatPoint:
+        dx = p2.x - p1.x
+        dy = p2.y - p1.y
 
         if dx == 0:
-            return [p2[0], (0 if dy <= 0 else self.size_px)]
+            return FloatPoint(p2.x, (0 if dy <= 0 else self.size_px))
 
         if dy == 0:
-            return [(0 if dx <= 0 else self.size_px), p2[1]]
+            return FloatPoint((0 if dx <= 0 else self.size_px), p2.y)
 
         y_gradient = dy / dx
-        y_intercept = p1[1] - (p1[0] * y_gradient)
+        y_intercept = p1.y - (p1.x * y_gradient)
 
         y_line = 0 if dx <= 0 else self.size_px
-        y_intersection = [y_line, (y_gradient * y_line) + y_intercept]
+        y_intersection = FloatPoint(y_line, (y_gradient * y_line) + y_intercept)
 
-        if y_intersection[1] >= 0 and y_intersection[1] <= self.size_px:
+        if y_intersection.y >= 0 and y_intersection.y <= self.size_px:
             return y_intersection
 
         x_gradient = dx / dy
-        x_intercept = p1[0] - (p1[1] * x_gradient)
+        x_intercept = p1.x - (p1.y * x_gradient)
 
         x_line = 0 if dy <= 0 else self.size_px
-        x_intersection = [(x_gradient * x_line) + x_intercept, x_line]
+        x_intersection = FloatPoint((x_gradient * x_line) + x_intercept, x_line)
 
-        if x_intersection[0] >= 0 and x_intersection[0] <= self.size_px:
+        if x_intersection.x >= 0 and x_intersection.x <= self.size_px:
             return x_intersection
 
-    def fill_shadows(self, render_surface: pygame.surface.Surface, points) -> None:
-        render_points = [points[0], points[4], points[1], points[2], points[3]]
+    def fill_shadows(self, render_surface: pygame.surface.Surface, point0: Point, point1: Point, point2: FloatPoint, point3: FloatPoint, point4: Point) -> None:
+        render_points: list[Union[FloatPoint, Point]] = [point0, point4, point1, point2, point3]
 
-        if points[2][0] + points[3][0] not in [1000, 0] and points[2][1] + points[3][1] not in [1000, 0]:
-            if abs(points[2][0] - points[3][0]) == self.size_px:  # x opposite
+        # TODO: Where does [1000, 0] come from?
+        if point2.x + point3.x not in [1000, 0] and point2.y + point3.y not in [1000, 0]:
+            if abs(point2.x - point3.x) == self.size_px:  # x opposite
 
-                if self.radius_px < points[2][1]:
+                if self.radius_px < point2.y:
                     render_points = [
-                        points[0],
-                        points[4],
-                        points[1],
-                        points[2],
-                        [0, self.size_px],
-                        [self.size_px, self.size_px],
-                        points[3],
+                        point0,
+                        point4,
+                        point1,
+                        point2,
+                        Point(0, self.size_px),
+                        Point(self.size_px, self.size_px),
+                        point3,
                     ]
 
-                if self.radius_px > points[2][1]:
-                    render_points = [points[0], points[4], points[1], points[2], [self.size_px, 0], [0, 0], points[3]]
+                if self.radius_px > point2.y:
+                    render_points = [point0, point4, point1, point2, Point(self.size_px, 0), Point(0, 0), point3]
 
-            elif abs(points[2][1] - points[3][1]) == self.size_px:  # y opposite
+            elif abs(point2.y - point3.y) == self.size_px:  # y opposite
 
-                if self.radius_px < points[2][0]:
+                if self.radius_px < point2.x:
                     render_points = [
-                        points[0],
-                        points[4],
-                        points[1],
-                        points[2],
-                        [self.size_px, self.size_px],
-                        [self.size_px, 0],
-                        points[3],
+                        point0,
+                        point4,
+                        point1,
+                        point2,
+                        Point(self.size_px, self.size_px),
+                        Point(self.size_px, 0),
+                        point3,
                     ]
 
-                if self.radius_px > points[2][0]:
-                    render_points = [points[0], points[4], points[1], points[2], [0, self.size_px], [0, 0], points[3]]
+                if self.radius_px > point2.x:
+                    render_points = [point0, point4, point1, point2, Point(0, self.size_px), Point(0, 0), point3]
 
             else:
-                if points[2][0] != self.size_px and points[2][0] != 0:
+                if point2.x != self.size_px and point2.x != 0:
                     render_points = [
-                        points[0],
-                        points[4],
-                        points[1],
-                        points[2],
-                        [points[3][0], points[2][1]],
-                        points[3],
+                        point0,
+                        point4,
+                        point1,
+                        point2,
+                        FloatPoint(point3.x, point2.y),
+                        point3,
                     ]
 
                 else:
                     render_points = [
-                        points[0],
-                        points[4],
-                        points[1],
-                        points[2],
-                        [points[2][0], points[3][1]],
-                        points[3],
+                        point0,
+                        point4,
+                        point1,
+                        point2,
+                        FloatPoint(point2.x, point3.y),
+                        point3,
                     ]
 
         pygame.draw.polygon(render_surface, (0, 0, 0), render_points)
 
-    def get_corners(self, points, mx, my):
-        corners = [points[0], points[2], points[2]]
+    def get_corners(self, points: CornerCoords, mx: int, my: int) -> tuple[Point, Point, Point]:
+        # What are the meaning of the returned 3 returned points and their ordering?
 
-        if mx >= points[1][0] and mx <= points[0][0]:  # top / bottom
-            if my < points[1][1]:
-                corners = [points[0], points[1], points[1]]
-            if my > points[0][1]:
-                corners = [points[2], points[3], points[3]]
+        if mx >= points.top_left.x and mx <= points.top_right.x:  # top / bottom
+            if my < points.top_left.y:
+                return points.top_right, points.top_left, points.top_left
+            if my > points.top_right.y:
+                return points.bottom_left, points.bottom_right, points.bottom_right
 
-        if my >= points[0][1] and my <= points[2][1]:  # left / right
-            if mx < points[1][0]:
-                corners = [points[1], points[2], points[2]]
-            if mx > points[0][0]:
-                corners = [points[0], points[3], points[3]]
+        if my >= points.top_right.y and my <= points.bottom_left.y:  # left / right
+            if mx < points.top_left.x:
+                return points.top_left, points.bottom_left, points.bottom_left
+            if mx > points.top_right.x:
+                return points.top_right, points.bottom_right, points.bottom_right
 
-        if mx < points[1][0] and my < points[1][1]:  # top left / bottom right
-            corners = [points[0], points[2], points[1]]
-        elif mx > points[0][0] and my > points[2][1]:  # top left / bottom right
-            corners = [points[0], points[2], points[3]]
+        if mx < points.top_left.x and my < points.top_left.y:  # top left / bottom right
+            return points.top_right, points.bottom_left, points.top_left
+        elif mx > points.top_right.x and my > points.bottom_left.y:  # top left / bottom right
+            return points.top_right, points.bottom_left, points.bottom_right
 
-        if mx > points[0][0] and my < points[1][1]:  # top right / bottom left
-            corners = [points[1], points[3], points[0]]
-        elif mx < points[1][0] and my > points[2][1]:  # top right / bottom left
-            corners = [points[1], points[3], points[2]]
+        if mx > points.top_right.x and my < points.top_left.y:  # top right / bottom left
+            return points.top_left, points.bottom_right, points.top_right
+        elif mx < points.top_left.x and my > points.bottom_left.y:  # top right / bottom left
+            return points.top_left, points.bottom_right, points.bottom_left
 
-        return corners
+        return points.top_right, points.bottom_left, points.bottom_left
 
-    def get_tiles(self, tiles: list[list[int]], x_px: int, y_px: int) -> list[list]:
+    def get_tiles(self, tiles: list[list[int]], x_px: int, y_px: int) -> list[CornerCoords]: # list[pygame.Rect]:
+        """From the shadow tiles, get corner coordinates of each shadow tile within in the
+        range of our light."""
+        # TODO: Convert to return a list of rects
+        # shadow_tile_rects = []
         points = []
 
+        light_rect = pygame.Rect(x_px - self.radius_px, y_px - self.radius_px, self.size_px, self.size_px)
         h = len(tiles)
         w = len(tiles[0])
         for y in range(h):
             for x in range(w):
                 if tiles[y][x]:
-                    if (
-                        x * tile_size_px - x_px >= (-self.radius_px) - tile_size_px
-                        and x * tile_size_px - x_px <= self.radius_px
-                    ) and (
-                        y * tile_size_px - y_px >= (-self.radius_px) - tile_size_px
-                        and y * tile_size_px - y_px <= self.radius_px
-                    ):
+                    tile_rect = pygame.Rect(x*tile_size_px, y*tile_size_px, tile_size_px, tile_size_px)
+                    if light_rect.colliderect(tile_rect):
+                        #shadow_tile_rects.append(tile_rect)
                         points.append(
-                            [
-                                [x * tile_size_px + tile_size_px, y * tile_size_px],
-                                [x * tile_size_px, y * tile_size_px],
-                                [x * tile_size_px, y * tile_size_px + tile_size_px],
-                                [x * tile_size_px + tile_size_px, y * tile_size_px + tile_size_px],
-                            ]
+                            # Could just as well append tile_rect here!
+                            CornerCoords(
+                                Point(x * tile_size_px + tile_size_px, y * tile_size_px),
+                                Point(x * tile_size_px, y * tile_size_px),
+                                Point(x * tile_size_px, y * tile_size_px + tile_size_px),
+                                Point(x * tile_size_px + tile_size_px, y * tile_size_px + tile_size_px),
+                            )
                         )
 
         return points
+        #return shadow_tile_rects
 
-    def pixel_shader(self, array: np.typing.NDArray[np.uint8]) -> pygame.surface.Surface:
-        final_array = np.array(array)
+    def pixel_shader(self) -> pygame.surface.Surface:
+        final_array = np.full(
+            (self.size_px, self.size_px, 3), (self.color.r, self.color.g, self.color.b), dtype=np.float64
+        )
 
-        for x in range(len(final_array)):
+        # Grid -----
+        x, y = np.meshgrid(np.arange(self.size_px), np.arange(self.size_px))
+        x = x.astype(np.float64)
+        y = y.astype(np.float64)
+        # -----
 
-            for y in range(len(final_array[x])):
+        # Radial -----
+        distance = np.sqrt((x - self.radius_px) ** 2 + (y - self.radius_px) ** 2)
+        radial_falloff = (self.radius_px - distance) * (1 / self.radius_px)
+        radial_falloff[radial_falloff <= 0] = 0
+        # -----
 
-                # radial -----
-                distance = meth.sqrt((x - self.radius_px) ** 2 + (y - self.radius_px) ** 2)
+        # Angular -----
+        if self.is_point:
+            point_angle = (180 / np.pi) * -np.arctan2((self.radius_px - x), (self.radius_px - y)) + 180
+            diff_angle = np.abs(((self.angle - point_angle) + 180) % 360 - 180)
+            angular_falloff = ((self.angle_width_deg / 2) - diff_angle) * (1 / self.angle_width_deg)
+            angular_falloff[angular_falloff <= 0] = 0
+        else:
+            angular_falloff = 1
+        # -----
 
-                radial_falloff = (self.radius_px - distance) * (1 / self.radius_px)
+        final_intensity = radial_falloff * angular_falloff * self.intensity
+        final_array *= final_intensity[..., np.newaxis]
 
-                if radial_falloff <= 0:
-                    radial_falloff = 0
-                # -----
+        return pygame.surfarray.make_surface(final_array.astype(np.uint8))
 
-                # angular -----
-                point_angle = (180 / meth.pi) * -meth.atan2((self.radius_px - x), (self.radius_px - y)) + 180
-                diff_anlge = abs(((self.angle - point_angle) + 180) % 360 - 180)
-
-                angular_falloff = ((self.angle_width / 2) - diff_anlge) * (1 / self.angle_width)
-
-                if angular_falloff <= 0:
-                    angular_falloff = 0
-
-                if not self.point:
-                    angular_falloff = 1
-                # -----
-
-                final_intensity = radial_falloff * angular_falloff * self.intensity
-                final_array[x][y] = final_array[x][y] * final_intensity
-
-        return pygame.surfarray.make_surface(final_array)
-
-    def check_cast(self, points, dx, dy):
+    def check_cast(self, points: CornerCoords, dx: int, dy: int) -> bool:
         render = False
 
-        if self.point:
+        if self.is_point:
             for point in points:
 
                 try:
-                    color = self.pixel_shader_surf.get_at((int(point[0] - dx), int(point[1] - dy)))
+                    color = self.pixel_shader_surf.get_at((point.x - dx, point.y - dy))
                 except:
-                    color = (0, 0, 0, 255)
+                    color = pygame.Color(0, 0, 0, 255)
 
-                if color != (0, 0, 0, 255):
-                    render = True
+                render = color.rgba != (0, 0, 0, 255)
 
         else:
             render = True
@@ -267,6 +284,7 @@ class Light:
 
         self.render_surface.fill((0, 0, 0))
         self.render_surface.blit(self.pixel_shader_surf, (0, 0))
+        radius_pt = Point(self.radius_px, self.radius_px)
 
         dx, dy = x_px - self.radius_px, y_px - self.radius_px
 
@@ -275,20 +293,18 @@ class Light:
             if self.check_cast(point, dx, dy):
 
                 corners = self.get_corners(point, x_px, y_px)
-                corners = [
-                    [corners[0][0] - dx, corners[0][1] - dy],
-                    [corners[1][0] - dx, corners[1][1] - dy],
-                    [corners[2][0] - dx, corners[2][1] - dy],
-                ]
+                corners = (
+                    Point(corners[0].x - dx, corners[0].y - dy),
+                    Point(corners[1].x - dx, corners[1].y - dy),
+                    Point(corners[2].x - dx, corners[2].y - dy),
+                )
                 self.fill_shadows(
                     self.render_surface,
-                    [
-                        corners[0],
-                        corners[1],
-                        self.get_intersection([self.radius_px] * 2, corners[1]),
-                        self.get_intersection([self.radius_px] * 2, corners[0]),
-                        corners[2],
-                    ],
+                    corners[0],
+                    corners[1],
+                    self.get_intersection(radius_pt, corners[1]),
+                    self.get_intersection(radius_pt, corners[0]),
+                    corners[2],
                 )
 
         pygame.draw.circle(self.render_surface, (255, 255, 255), (self.radius_px, self.radius_px), 2)
@@ -415,9 +431,6 @@ def add_ambient_light(
 
 world = Map()
 
-# size, color, intensity, point, angle=0, angle_width=360
-mouse_light = Light(75, pygame.Color(255, 185, 9), 1, False)
-
 
 class MapLight(NamedTuple):
     light: Light
@@ -434,6 +447,12 @@ def screen_to_display_coords(pos_px: tuple[int, int]) -> tuple[int, int]:
     return pos_px[0] // scale_factor, pos_px[1] // scale_factor
 
 
+last_mouse_x_px: Optional[int] = None
+last_mouse_y_px: Optional[int] = None
+last_diff_mouse_x_px: Optional[int] = None
+last_diff_mouse_y_px: Optional[int] = None
+directional_mouse_light: Optional[Light] = None
+non_directional_mouse_light = Light(75, pygame.Color(255, 185, 9), 1, False)
 while True:
     display.fill((0, 0, 0))
 
@@ -464,7 +483,18 @@ while True:
     add_ambient_light(light_surface)
 
     mouse_x_px, mouse_y_px = screen_to_display_coords(pygame.mouse.get_pos())
-    mouse_light.add_light(light_surface, world.shadow_tiles, mouse_x_px, mouse_y_px)
+    non_directional_mouse_light.add_light(light_surface, world.shadow_tiles, mouse_x_px, mouse_y_px)
+    if False:
+        if last_mouse_x_px is None or last_mouse_y_px is None:
+            last_mouse_x_px, last_mouse_y_px = mouse_x_px, mouse_y_px
+        if (mouse_x_px, mouse_y_px) != (last_mouse_x_px, last_mouse_y_px):
+            last_diff_mouse_x_px, last_diff_mouse_y_px = last_mouse_x_px, last_mouse_y_px
+        if last_diff_mouse_x_px is not None and last_diff_mouse_y_px is not None:
+            angle_deg = math.atan2(last_diff_mouse_y_px - mouse_y_px, mouse_x_px - last_diff_mouse_x_px) * 180 / np.pi
+            directional_mouse_light = Light(150, pygame.Color(255, 255, 255), 1, True, angle_deg, 10)
+        if directional_mouse_light is not None:
+            directional_mouse_light.add_light(light_surface, world.shadow_tiles, mouse_x_px, mouse_y_px)
+        last_mouse_x_px, last_mouse_y_px = mouse_x_px, mouse_y_px
 
     for map_light in map_lights:
         map_light.light.add_light(light_surface, world.shadow_tiles, map_light.x_px, map_light.y_px)
