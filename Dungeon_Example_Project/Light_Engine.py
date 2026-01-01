@@ -1,9 +1,11 @@
+#!/usr/bin/env python
+
+import copy
 import math as meth
 import numpy as np
 import random
 
 import pygame
-from pygame.locals import *
 
 pygame.init()
 
@@ -13,11 +15,12 @@ display = pygame.Surface((400, 240))
 clock, fps = pygame.time.Clock(), 1000
 
 tileset = pygame.transform.scale(pygame.image.load("Dungeon_Tileset.png"), (160, 160)).convert_alpha()
+tile_size_px = 16
 
 
-def get_tile(x, y):
+def get_tile(x: int, y: int) -> pygame.surface.Surface:
     surf = tileset.copy()
-    surf.set_clip(pygame.Rect(x * 16, y * 16, 16, 16))
+    surf.set_clip(pygame.Rect(x * tile_size_px, y * tile_size_px, tile_size_px, tile_size_px))
     img = surf.subsurface(surf.get_clip())
     return img.copy()
 
@@ -30,15 +33,33 @@ for y in range(10):
 
 
 class LIGHT:
-    def __init__(self, size, color, intensity, point, angle=0, angle_width=360):
+    def __init__(
+        self,
+        size: int,
+        color: pygame.Color,
+        intensity: float,
+        is_point: bool,
+        angle_deg: float = 0.0,
+        angle_width_deg: float = 360.0,
+    ) -> None:
+        """
+        Docstring for __init__
+
+        :param size: TODO: What does the size do?
+        :param color: Color of the light
+        :param intensity: Intensity of the light [0.0, 1.0]
+        :param is_point: If the light is a point (directional) light source
+        :param angle_deg: For a point light, the direction of the light's beam in degrees [0.0, 360.0]
+        :param angle_width_deg: For a point light, the width of the lights's bean in degrees [0.0, 360.0]
+        """
         self.size = size
         self.radius = size * 0.5
         self.render_surface = pygame.Surface((size, size))
         self.intensity = intensity
-        self.angle = angle
-        self.angle_width = angle_width
-        self.point = point
-        self.pixel_shader_surf = self.pixel_shader(np.full((size, size, 3), color, dtype=np.uint16))
+        self.angle = angle_deg
+        self.angle_width = angle_width_deg
+        self.point = is_point
+        self.pixel_shader_surf = self.pixel_shader(np.full((size, size, 3), color, dtype=np.uint8))
         self.render_surface.set_colorkey((0, 0, 0))
 
     def get_intersection(self, p1, p2):
@@ -69,7 +90,7 @@ class LIGHT:
         if x_intersection[0] >= 0 and x_intersection[0] <= self.size:
             return x_intersection
 
-    def fill_shadows(self, render_surface, points):
+    def fill_shadows(self, render_surface: pygame.surface.Surface, points) -> None:
         render_points = [points[0], points[4], points[1], points[2], points[3]]
 
         if points[2][0] + points[3][0] not in [1000, 0] and points[2][1] + points[3][1] not in [1000, 0]:
@@ -87,15 +108,7 @@ class LIGHT:
                     ]
 
                 if self.radius > points[2][1]:
-                    render_points = [
-                        points[0],
-                        points[4],
-                        points[1],
-                        points[2],
-                        [self.size, 0],
-                        [0, 0],
-                        points[3],
-                    ]
+                    render_points = [points[0], points[4], points[1], points[2], [self.size, 0], [0, 0], points[3]]
 
             elif abs(points[2][1] - points[3][1]) == self.size:  # y opposite
 
@@ -111,15 +124,7 @@ class LIGHT:
                     ]
 
                 if self.radius > points[2][0]:
-                    render_points = [
-                        points[0],
-                        points[4],
-                        points[1],
-                        points[2],
-                        [0, self.size],
-                        [0, 0],
-                        points[3],
-                    ]
+                    render_points = [points[0], points[4], points[1], points[2], [0, self.size], [0, 0], points[3]]
 
             else:
                 if points[2][0] != self.size and points[2][0] != 0:
@@ -174,24 +179,28 @@ class LIGHT:
     def get_tiles(self, tiles, mx, my):
         points = []
 
-        for i in range(len(tiles)):
-            for x in range(len(tiles[i])):
-                if tiles[i][x]:
-                    if (x * 16 - mx >= (-self.radius) - 16 and x * 16 - mx <= self.radius) and (
-                        i * 16 - my >= (-self.radius) - 16 and i * 16 - my <= self.radius
+        h = len(tiles)
+        w = len(tiles[0])
+        for y in range(h):
+            for x in range(w):
+                if tiles[y][x]:
+                    if (
+                        x * tile_size_px - mx >= (-self.radius) - tile_size_px and x * tile_size_px - mx <= self.radius
+                    ) and (
+                        y * tile_size_px - my >= (-self.radius) - tile_size_px and y * tile_size_px - my <= self.radius
                     ):
                         points.append(
                             [
-                                [x * 16 + 16, i * 16],
-                                [x * 16, i * 16],
-                                [x * 16, i * 16 + 16],
-                                [x * 16 + 16, i * 16 + 16],
+                                [x * tile_size_px + tile_size_px, y * tile_size_px],
+                                [x * tile_size_px, y * tile_size_px],
+                                [x * tile_size_px, y * tile_size_px + tile_size_px],
+                                [x * tile_size_px + tile_size_px, y * tile_size_px + tile_size_px],
                             ]
                         )
 
         return points
 
-    def pixel_shader(self, array):
+    def pixel_shader(self, array: np.typing.NDArray[np.uint8]) -> pygame.surface.Surface:
         final_array = np.array(array)
 
         for x in range(len(final_array)):
@@ -244,7 +253,7 @@ class LIGHT:
 
         return render
 
-    def main(self, tiles, display, mx, my):
+    def main(self, tiles, display: pygame.surface.Surface, mx: int, my: int) -> pygame.surface.Surface:
         self.render_surface.fill((0, 0, 0))
         self.render_surface.blit(self.pixel_shader_surf, (0, 0))
 
@@ -273,11 +282,7 @@ class LIGHT:
 
         pygame.draw.circle(self.render_surface, (255, 255, 255), (self.radius, self.radius), 2)
 
-        display.blit(
-            self.render_surface,
-            (mx - self.radius, my - self.radius),
-            special_flags=BLEND_RGBA_ADD,
-        )
+        display.blit(self.render_surface, (mx - self.radius, my - self.radius), special_flags=pygame.BLEND_RGBA_ADD)
 
         return display
 
@@ -302,181 +307,50 @@ class MAP:
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         ]
 
-        self.shadow_tiles = [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ]
+        self.shadow_tiles = copy.deepcopy(self.tiles)
 
-        self.texture_map = [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ]
+        self.texture_map = copy.deepcopy(self.tiles)
 
         self.generate_tiles()
 
-    def render(self, win):
-        for i in range(len(self.tiles)):
-            for x in range(len(self.tiles[i])):
-                tile_pos = [x * 16, i * 16]
-                win.blit(tiles_textures[self.texture_map[i][x]], tile_pos)
+    def render(self, win: pygame.surface.Surface) -> None:
+        h = len(self.tiles)
+        w = len(self.tiles[0])
+        for y in range(h):
+            for x in range(w):
+                tile_pos = [x * tile_size_px, y * tile_size_px]
+                win.blit(tiles_textures[self.texture_map[y][x]], tile_pos)
 
-    def generate_tiles(self):
-        for i in range(len(self.tiles)):
-            for x in range(len(self.tiles[0])):
-                self.texture_map[i][x] = self.render_tile(i, x)
-                if self.tiles[i][x]:
-                    if i == 14:
-                        self.shadow_tiles[i][x] = 1
+    def generate_tiles(self) -> None:
+        h = len(self.tiles)
+        w = len(self.tiles[0])
+        for y in range(h):
+            for x in range(w):
+                self.texture_map[y][x] = self.render_tile(x, y, w, h)
+                if self.tiles[y][x]:
+                    if y == h - 1:
+                        self.shadow_tiles[y][x] = 1
                     else:
-                        if not self.tiles[i + 1][x]:
-                            self.shadow_tiles[i][x] = 0
+                        if not self.tiles[y + 1][x]:
+                            self.shadow_tiles[y][x] = 0
                         else:
-                            self.shadow_tiles[i][x] = 1
+                            self.shadow_tiles[y][x] = 1
                 else:
-                    self.shadow_tiles[i][x] = 0
+                    self.shadow_tiles[y][x] = 0
 
-    def render_tile(self, i, x):
-        tile_states = []
-
-        if i == 0:
-            if x == 0:
-                tile_states = [
-                    1,
-                    1,
-                    1,
-                    1,
-                    self.tiles[i][x],
-                    self.tiles[i][x + 1],
-                    1,
-                    self.tiles[i + 1][x],
-                    self.tiles[i + 1][x + 1],
-                ]
-            elif x == 24:
-                tile_states = [
-                    1,
-                    1,
-                    1,
-                    self.tiles[i][x - 1],
-                    self.tiles[i][x],
-                    1,
-                    self.tiles[i - 1][x - 1],
-                    self.tiles[i - 1][x],
-                    1,
-                ]
-            else:
-                tile_states = [
-                    1,
-                    1,
-                    1,
-                    self.tiles[i][x - 1],
-                    self.tiles[i][x],
-                    self.tiles[i][x + 1],
-                    self.tiles[i + 1][x - 1],
-                    self.tiles[i + 1][x],
-                    self.tiles[i + 1][x + 1],
-                ]
-
-        elif i == 14:
-            if x == 0:
-                tile_states = [
-                    1,
-                    self.tiles[i - 1][x],
-                    self.tiles[i - 1][x + 1],
-                    1,
-                    self.tiles[i][x],
-                    self.tiles[i][x + 1],
-                    1,
-                    1,
-                    1,
-                ]
-            elif x == 24:
-                tile_states = [
-                    self.tiles[i - 1][x - 1],
-                    self.tiles[i - 1][x],
-                    1,
-                    self.tiles[i][x - 1],
-                    self.tiles[i][x],
-                    1,
-                    1,
-                    1,
-                    1,
-                ]
-            else:
-                tile_states = [
-                    self.tiles[i - 1][x - 1],
-                    self.tiles[i - 1][x],
-                    self.tiles[i - 1][x + 1],
-                    self.tiles[i][x - 1],
-                    self.tiles[i][x],
-                    self.tiles[i][x + 1],
-                    1,
-                    1,
-                    1,
-                ]
-
-        else:
-            if x == 0:
-                tile_states = [
-                    1,
-                    self.tiles[i - 1][x],
-                    self.tiles[i - 1][x + 1],
-                    1,
-                    self.tiles[i][x],
-                    self.tiles[i][x + 1],
-                    1,
-                    self.tiles[i + 1][x],
-                    self.tiles[i + 1][x + 1],
-                ]
-            elif x == 24:
-                tile_states = [
-                    self.tiles[i - 1][x - 1],
-                    self.tiles[i - 1][x],
-                    1,
-                    self.tiles[i][x - 1],
-                    self.tiles[i][x],
-                    1,
-                    self.tiles[i + 1][x - 1],
-                    self.tiles[i + 1][x],
-                    1,
-                ]
-            else:
-                tile_states = [
-                    self.tiles[i - 1][x - 1],
-                    self.tiles[i - 1][x],
-                    self.tiles[i - 1][x + 1],
-                    self.tiles[i][x - 1],
-                    self.tiles[i][x],
-                    self.tiles[i][x + 1],
-                    self.tiles[i + 1][x - 1],
-                    self.tiles[i + 1][x],
-                    self.tiles[i + 1][x + 1],
-                ]
+    def render_tile(self, x: int, y: int, w: int, h: int) -> None:
+        print(f"x={x}; y={y}; w={w}; h={h}", flush=True)
+        tile_states = [
+            self.tiles[y - 1][x - 1] if x > 0 and y > 0 else 1,
+            self.tiles[y - 1][x] if y > 0 else 1,
+            self.tiles[y - 1][x + 1] if x < w - 1 and y > 0 else 1,
+            self.tiles[y][x - 1] if x > 0 else 1,
+            self.tiles[y][x],
+            self.tiles[y][x + 1] if x < w - 1 else 1,
+            self.tiles[y + 1][x - 1] if x > 0 and y < h - 1 else 1,
+            self.tiles[y + 1][x] if y < h - 1 else 1,
+            self.tiles[y + 1][x + 1] if x < w - 1 and y < h - 1 else 1,
+        ]
 
         # --------------------------------------
 
@@ -513,9 +387,9 @@ class MAP:
 
     def clicking(self, mx, my, button):
         if button:
-            self.tiles[my // 16][mx // 16] = 1
+            self.tiles[my // tile_size_px][mx // tile_size_px] = 1
         else:
-            self.tiles[my // 16][mx // 16] = 0
+            self.tiles[my // tile_size_px][mx // tile_size_px] = 0
         self.generate_tiles()
 
 
@@ -560,10 +434,10 @@ while True:
         light[0].main(world.shadow_tiles, lights_display, light[1][0], light[1][1])
         display.blit(tiles_textures[90], (light[1][0] - 8, light[1][1] - 8))
 
-    display.blit(lights_display, (0, 0), special_flags=BLEND_RGBA_MULT)
+    display.blit(lights_display, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
 
     for event in pygame.event.get():
-        if event.type == QUIT:
+        if event.type == pygame.QUIT:
             pygame.quit()
 
     surf = pygame.transform.scale(display, (1200, 720))
