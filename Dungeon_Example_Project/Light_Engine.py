@@ -10,9 +10,12 @@ import pygame
 pygame.init()
 
 pygame.display.set_caption("Light Render")
-screen = pygame.display.set_mode((1200, 720), pygame.DOUBLEBUF)
-display = pygame.Surface((400, 240))
-clock, fps = pygame.time.Clock(), 1000
+display_size_pixels = 400, 240
+scale_factor = 3
+screen_size_pixels = display_size_pixels[0] * scale_factor, display_size_pixels[1] * scale_factor
+screen = pygame.display.set_mode(screen_size_pixels, pygame.DOUBLEBUF)
+display = pygame.Surface(display_size_pixels)
+clock, fps = pygame.time.Clock(), 30
 
 tileset = pygame.transform.scale(pygame.image.load("Dungeon_Tileset.png"), (160, 160)).convert_alpha()
 tile_size_px = 16
@@ -45,7 +48,7 @@ class LIGHT:
         """
         Docstring for __init__
 
-        :param size: TODO: What does the size do?
+        :param size: The diameter of the light
         :param color: Color of the light
         :param intensity: Intensity of the light [0.0, 1.0]
         :param is_point: If the light is a point (directional) light source
@@ -59,7 +62,9 @@ class LIGHT:
         self.angle = angle_deg
         self.angle_width = angle_width_deg
         self.point = is_point
-        self.pixel_shader_surf = self.pixel_shader(np.full((size, size, 3), color, dtype=np.uint8))
+        self.pixel_shader_surf = self.pixel_shader(
+            np.full((size, size, 3), (color.r, color.g, color.b), dtype=np.uint8)
+        )
         self.render_surface.set_colorkey((0, 0, 0))
 
     def get_intersection(self, p1, p2):
@@ -289,6 +294,7 @@ class LIGHT:
 
 class MAP:
     def __init__(self):
+        # 1 indicates a wall
         self.tiles = [
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
@@ -339,7 +345,6 @@ class MAP:
                     self.shadow_tiles[y][x] = 0
 
     def render_tile(self, x: int, y: int, w: int, h: int) -> None:
-        print(f"x={x}; y={y}; w={w}; h={h}", flush=True)
         tile_states = [
             self.tiles[y - 1][x - 1] if x > 0 and y > 0 else 1,
             self.tiles[y - 1][x] if y > 0 else 1,
@@ -393,7 +398,7 @@ class MAP:
         self.generate_tiles()
 
 
-def global_light(size, intensity):
+def global_light(size, intensity: float) -> pygame.surface.Surface:
     dark = pygame.Surface(size).convert_alpha()
     dark.fill((255, 255, 255, intensity))
     return dark
@@ -402,28 +407,39 @@ def global_light(size, intensity):
 world = MAP()
 
 # size, color, intensity, point, angle=0, angle_width=360
-light_test = LIGHT(150, (255, 185, 9), 1, False)
+light_test = LIGHT(150, pygame.Color(255, 185, 9), 1, False)
 
 lights = []
 
 surfaces = []
 
 while True:
-    clock.tick(fps)
     display.fill((0, 0, 0))
 
     mx, my = pygame.mouse.get_pos()
-    mx = round(mx // 3)
-    my = round(my // 3)
+    mx = round(mx // scale_factor)
+    my = round(my // scale_factor)
 
     world.render(display)
-    if pygame.mouse.get_pressed()[0]:
-        world.clicking(mx, my, 1)
-    if pygame.mouse.get_pressed()[2]:
-        world.clicking(mx, my, 0)
 
-    if pygame.mouse.get_pressed()[1]:
-        lights.append([LIGHT(150, (255, 185, 9), 1, False), [mx, my]])
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:  # left mouse button
+                # Add a wall on a left mouse click
+                world.clicking(event.pos[0] // scale_factor, event.pos[1] // scale_factor, 1)
+            if event.button == 2:  # mousewheel
+                # Add a light on a mousewheel click
+                lights.append(
+                    [
+                        LIGHT(150, pygame.Color(255, 185, 9), 1, False),
+                        (event.pos[0] // scale_factor, event.pos[1] // scale_factor),
+                    ]
+                )
+            if event.button == 3:  # right mouse button
+                # Remove a wall on a left mouse click
+                world.clicking(event.pos[0] // scale_factor, event.pos[1] // scale_factor, 0)
 
     lights_display = pygame.Surface((display.get_size()))
 
@@ -436,12 +452,9 @@ while True:
 
     display.blit(lights_display, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
 
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            pygame.quit()
-
-    surf = pygame.transform.scale(display, (1200, 720))
+    surf = pygame.transform.scale(display, screen_size_pixels)
     screen.blit(surf, (0, 0))
 
     pygame.display.set_caption(str(clock.get_fps()))
     pygame.display.update()
+    clock.tick(fps)
