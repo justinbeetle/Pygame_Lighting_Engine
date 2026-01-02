@@ -256,22 +256,18 @@ class Light:
             Point(rect.right, rect.top), Point(rect.left, rect.bottom), Point(rect.right, rect.bottom)
         )
 
-    def get_shadow_tile_rects(self, tiles: list[list[int]], x_px: int, y_px: int) -> list[pygame.Rect]:
-        """From the shadow tiles, get rect of each shadow tile within in the range of this light."""
-        shadow_tile_rects = []
-
+    def filter_shadow_rects(self, shadow_rects: list[pygame.Rect], x_px: int, y_px: int) -> list[pygame.Rect]:
+        """Filter the shadow_rects to those that collide with this light source.."""
         light_rect = pygame.Rect(x_px - self.radius_px, y_px - self.radius_px, self.size_px, self.size_px)
-        h = len(tiles)
-        w = len(tiles[0])
-        for y in range(h):
-            for x in range(w):
-                if tiles[y][x]:
-                    tile_rect = pygame.Rect(x * tile_size_px, y * tile_size_px, tile_size_px, tile_size_px)
-                    if light_rect.colliderect(tile_rect):
-                        shadow_tile_rects.append(tile_rect)
-
-        # logger.debug("shadow_tile_rects found %s tiles", len(shadow_tile_rects))
-        return shadow_tile_rects
+        filtered = []
+        for shadow_rect in shadow_rects:
+            if shadow_rect.height == 0 and light_rect.clipline(
+                shadow_rect.left, shadow_rect.top, shadow_rect.right, shadow_rect.bottom
+            ):
+                filtered.append(shadow_rect)
+            elif light_rect.colliderect(shadow_rect):
+                filtered.append(shadow_rect)
+        return filtered
 
     def check_cast(self, shadow_tile_rect: pygame.Rect) -> bool:
         """If the rect is fully in shadow, return True indicating this shadow tile can be ignored."""
@@ -294,7 +290,7 @@ class Light:
         return True
 
     def add_light(
-        self, light_surface: pygame.surface.Surface, shadow_tiles: list[list[int]], x_px: int, y_px: int
+        self, light_surface: pygame.surface.Surface, shadow_rects: list[pygame.Rect], x_px: int, y_px: int
     ) -> None:
         """Add the light from this light source onto the provided light_surface at pixel coordinates
         x_px, y_px in the coordinate frame of light_surface."""
@@ -305,10 +301,9 @@ class Light:
         dx = x_px - self.radius_px
         dy = y_px - self.radius_px
 
-        for shadow_tile_rect in self.get_shadow_tile_rects(shadow_tiles, x_px, y_px):
+        for shadow_tile_rect in self.filter_shadow_rects(shadow_rects, x_px, y_px):
             # Shift the rect to be in the coordinate system of self.render_surface
-            shadow_tile_rect.x -= dx
-            shadow_tile_rect.y -= dy
+            shadow_tile_rect = shadow_tile_rect.move(-dx, -dy)
 
             if self.check_cast(shadow_tile_rect):
                 polygon_pts = self.get_shadow_polygon_points(shadow_tile_rect)
@@ -363,11 +358,13 @@ class Map:
         ]
         """
 
-        # Same si
-        self.shadow_tiles = copy.deepcopy(self.tiles)
-
-        # Index in tile_textures for each tile
+        # Index in tile_textures for each tile - same dimensions as self.tiles
         self.texture_map = copy.deepcopy(self.tiles)
+
+        # 1 indicates a shadow tile - same dimensions as self.tiles
+        self.shadow_tiles = copy.deepcopy(self.tiles)
+        # Rectangles for each of the shadow tiles
+        self.shadow_rects: list[pygame.Rect] = []
 
         self.generate_tiles()
 
@@ -385,10 +382,26 @@ class Map:
         h = len(self.tiles)
         w = len(self.tiles[0])
         max_y = h - 1
+        self.shadow_rects.clear()
         for y in range(h):
             for x in range(w):
                 self.texture_map[y][x] = self.select_tile_textures_index(x, y)
-                self.shadow_tiles[y][x] = self.tiles[y][x] and (y == max_y or self.tiles[y + 1][x])
+                if self.tiles[y][x]:
+                    if y == max_y:
+                        self.shadow_tiles[y][x] = 1
+                        self.shadow_rects.append(
+                            pygame.Rect(x * tile_size_px, y * tile_size_px, tile_size_px, tile_size_px)
+                        )
+                    elif self.tiles[y + 1][x]:
+                        self.shadow_tiles[y][x] = 1
+                        self.shadow_rects.append(
+                            pygame.Rect(x * tile_size_px, y * tile_size_px, tile_size_px, tile_size_px)
+                        )
+                    else:
+                        self.shadow_tiles[y][x] = 0
+                        self.shadow_rects.append(pygame.Rect(x * tile_size_px, y * tile_size_px, tile_size_px, 0))
+                else:
+                    self.shadow_tiles[y][x] = 0
 
     def select_tile_textures_index(self, x: int, y: int) -> int:
         """Select an index in tile_textures at random based on which tiles in the local 3x3 block are walls.
@@ -520,7 +533,7 @@ while is_running:
     set_ambient_light(light_surface)
 
     mouse_x_px, mouse_y_px = screen_to_display_coords(pygame.mouse.get_pos())
-    non_directional_mouse_light.add_light(light_surface, world.shadow_tiles, mouse_x_px, mouse_y_px)
+    non_directional_mouse_light.add_light(light_surface, world.shadow_rects, mouse_x_px, mouse_y_px)
     if enable_directional_light:
         if last_mouse_x_px is None or last_mouse_y_px is None:
             last_mouse_x_px, last_mouse_y_px = mouse_x_px, mouse_y_px
@@ -530,7 +543,7 @@ while is_running:
             angle_deg = math.atan2(last_diff_mouse_y_px - mouse_y_px, mouse_x_px - last_diff_mouse_x_px) * 180 / np.pi
             directional_mouse_light = Light(150, pygame.Color(255, 255, 255), 1, True, angle_deg, 10)
         if directional_mouse_light is not None:
-            directional_mouse_light.add_light(light_surface, world.shadow_tiles, mouse_x_px, mouse_y_px)
+            directional_mouse_light.add_light(light_surface, world.shadow_rects, mouse_x_px, mouse_y_px)
         last_mouse_x_px, last_mouse_y_px = mouse_x_px, mouse_y_px
 
     for map_light in map_lights:
