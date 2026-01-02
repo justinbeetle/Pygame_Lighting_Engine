@@ -1,12 +1,22 @@
 #!/usr/bin/env python
 
 import copy
+import logging
 import math
 import random
+import sys
 from typing import NamedTuple, Optional, Union
 
 import numpy as np
 import pygame
+
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.DEBUG,
+    format="%(asctime)s.%(msecs)d %(levelname)s %(filename)s:%(funcName)s:%(lineno)d - %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",  # ISO-8601
+)
+logger = logging.getLogger(__name__)
 
 pygame.init()
 
@@ -46,13 +56,6 @@ class FloatPoint(NamedTuple):
     y: float
 
 
-class CornerCoords(NamedTuple):  # This effective duplicates a rect
-    top_right: Point
-    top_left: Point
-    bottom_left: Point
-    bottom_right: Point
-
-
 class Light:
     def __init__(
         self,
@@ -64,8 +67,6 @@ class Light:
         angle_width_deg: float = 360.0,
     ) -> None:
         """
-        Docstring for __init__
-
         :param radius_px: The radius of the light in pixels
         :param color: Color of the light
         :param intensity: Intensity of the light [0.0, 1.0]
@@ -84,18 +85,53 @@ class Light:
         self.pixel_shader_surf = self.pixel_shader()
         self.render_surface.set_colorkey((0, 0, 0))
 
-    def get_intersection(self, p1: Point, p2: Point) -> FloatPoint:
-        dx = p2.x - p1.x
-        dy = p2.y - p1.y
+    def pixel_shader(self) -> pygame.surface.Surface:
+        """Return a surface with the full light map (no shadows) for this light source."""
+
+        final_array = np.full(
+            (self.size_px, self.size_px, 3), (self.color.r, self.color.g, self.color.b), dtype=np.float64
+        )
+
+        # Grid -----
+        x, y = np.meshgrid(np.arange(self.size_px), np.arange(self.size_px))
+        x = x.astype(np.float64)
+        y = y.astype(np.float64)
+        # -----
+
+        # Radial -----
+        distance = np.sqrt((x - self.radius_px) ** 2 + (y - self.radius_px) ** 2)
+        radial_falloff = (self.radius_px - distance) * (1 / self.radius_px)
+        radial_falloff[radial_falloff <= 0] = 0
+        # -----
+
+        # Angular -----
+        if self.is_point:
+            point_angle = (180 / np.pi) * -np.arctan2((self.radius_px - x), (self.radius_px - y)) + 180
+            diff_angle = np.abs(((self.angle - point_angle) + 180) % 360 - 180)
+            angular_falloff = ((self.angle_width_deg / 2) - diff_angle) * (1 / self.angle_width_deg)
+            angular_falloff[angular_falloff <= 0] = 0
+        else:
+            angular_falloff = 1
+        # -----
+
+        final_intensity = radial_falloff * angular_falloff * self.intensity
+        final_array *= final_intensity[..., np.newaxis]
+
+        return pygame.surfarray.make_surface(final_array.astype(np.uint8))
+
+    def get_intersection(self, pt: Point) -> FloatPoint:
+        """Get the center point of self.render_surface project to the edge of the surface through pt."""
+        dx = pt.x - self.radius_px
+        dy = pt.y - self.radius_px
 
         if dx == 0:
-            return FloatPoint(p2.x, (0 if dy <= 0 else self.size_px))
+            return FloatPoint(pt.x, (0 if dy <= 0 else self.size_px))
 
         if dy == 0:
-            return FloatPoint((0 if dx <= 0 else self.size_px), p2.y)
+            return FloatPoint((0 if dx <= 0 else self.size_px), pt.y)
 
         y_gradient = dy / dx
-        y_intercept = p1.y - (p1.x * y_gradient)
+        y_intercept = self.radius_px - (self.radius_px * y_gradient)
 
         y_line = 0 if dx <= 0 else self.size_px
         y_intersection = FloatPoint(y_line, (y_gradient * y_line) + y_intercept)
@@ -104,15 +140,21 @@ class Light:
             return y_intersection
 
         x_gradient = dx / dy
-        x_intercept = p1.x - (p1.y * x_gradient)
+        x_intercept = self.radius_px - (self.radius_px * x_gradient)
 
         x_line = 0 if dy <= 0 else self.size_px
         x_intersection = FloatPoint((x_gradient * x_line) + x_intercept, x_line)
+        return x_intersection
 
-        if x_intersection.x >= 0 and x_intersection.x <= self.size_px:
-            return x_intersection
-
-    def fill_shadows(self, render_surface: pygame.surface.Surface, point0: Point, point1: Point, point2: FloatPoint, point3: FloatPoint, point4: Point) -> None:
+    def fill_shadows(
+        self,
+        render_surface: pygame.surface.Surface,
+        point0: Point,
+        point1: Point,
+        point2: FloatPoint,
+        point3: FloatPoint,
+        point4: Point,
+    ) -> None:
         render_points: list[Union[FloatPoint, Point]] = [point0, point4, point1, point2, point3]
 
         # TODO: Where does [1000, 0] come from?
@@ -171,40 +213,70 @@ class Light:
                     ]
 
         pygame.draw.polygon(render_surface, (0, 0, 0), render_points)
+        # pygame.draw.aalines(render_surface, (0, 0, 0), True, render_points)
 
-    def get_corners(self, points: CornerCoords, mx: int, my: int) -> tuple[Point, Point, Point]:
-        # What are the meaning of the returned 3 returned points and their ordering?
+    def get_corners(self, rect: pygame.Rect) -> Optional[tuple[Point, Point, Point]]:
+        """Get a 3-tuple of points defining the points on the rectangle
+        :param rect: Shadow tile rect in the coordinate frame of self.render_surface
 
-        if mx >= points.top_left.x and mx <= points.top_right.x:  # top / bottom
-            if my < points.top_left.y:
-                return points.top_right, points.top_left, points.top_left
-            if my > points.top_right.y:
-                return points.bottom_left, points.bottom_right, points.bottom_right
+        Upper      Upper      Upper
+        Left       Center     Right
+                 __________
+                |          |
+        Center  |  Center  |  Center
+        Left    |  Center  |  Right
+                |__________|
 
-        if my >= points.top_right.y and my <= points.bottom_left.y:  # left / right
-            if mx < points.top_left.x:
-                return points.top_left, points.bottom_left, points.bottom_left
-            if mx > points.top_right.x:
-                return points.top_right, points.bottom_right, points.bottom_right
+        Lower      Lower      Lower
+        Left       Center     Right
+        """
+        if rect.left <= self.radius_px <= rect.right:
+            if self.radius_px < rect.top:
+                # Upper center case - light above the shadow tile casting a shadow down
+                # logger.debug("Upper center")
+                return Point(rect.right, rect.top), Point(rect.left, rect.top), Point(rect.left, rect.top)
 
-        if mx < points.top_left.x and my < points.top_left.y:  # top left / bottom right
-            return points.top_right, points.bottom_left, points.top_left
-        elif mx > points.top_right.x and my > points.bottom_left.y:  # top left / bottom right
-            return points.top_right, points.bottom_left, points.bottom_right
+            if self.radius_px > rect.bottom:
+                # Lower center case - light below the shadow tile casting a shadow up
+                # logger.debug("Lower center")
+                return Point(rect.left, rect.bottom), Point(rect.right, rect.bottom), Point(rect.right, rect.bottom)
 
-        if mx > points.top_right.x and my < points.top_left.y:  # top right / bottom left
-            return points.top_left, points.bottom_right, points.top_right
-        elif mx < points.top_left.x and my > points.bottom_left.y:  # top right / bottom left
-            return points.top_left, points.bottom_right, points.bottom_left
+            # Center center case - inside the shadow tile
+            # logger.debug("Center center")
+            return None
 
-        return points.top_right, points.bottom_left, points.bottom_left
+        if rect.top <= self.radius_px <= rect.bottom:
+            if self.radius_px < rect.left:
+                # Center left case - light left of the shadow tile casting a shadow right
+                # logger.debug("Center left")
+                return Point(rect.left, rect.top), Point(rect.left, rect.bottom), Point(rect.left, rect.bottom)
 
-    def get_tiles(self, tiles: list[list[int]], x_px: int, y_px: int) -> list[CornerCoords]: # list[pygame.Rect]:
-        """From the shadow tiles, get corner coordinates of each shadow tile within in the
-        range of our light."""
-        # TODO: Convert to return a list of rects
-        # shadow_tile_rects = []
-        points = []
+            # Center right case - light right of the shadow tile casting a shadow left
+            # logger.debug("Center right")
+            return Point(rect.right, rect.top), Point(rect.right, rect.bottom), Point(rect.right, rect.bottom)
+
+        if self.radius_px < rect.left and self.radius_px < rect.top:
+            # Upper left case - light above and left of the shadow tile casting a shadow to the lower right
+            # logger.debug("Upper left")
+            return Point(rect.right, rect.top), Point(rect.left, rect.bottom), Point(rect.left, rect.top)
+
+        if self.radius_px > rect.right and self.radius_px > rect.bottom:
+            # Lower right case - light below and right of the shadow tile casting a shadow to the upper left
+            # logger.debug("Lower right")
+            return Point(rect.right, rect.top), Point(rect.left, rect.bottom), Point(rect.right, rect.bottom)
+
+        if self.radius_px > rect.right and self.radius_px < rect.top:
+            # Upper right case - light above and right of the shadow tile casting a shadow to the lower left
+            # logger.debug("Upper right")
+            return Point(rect.left, rect.top), Point(rect.right, rect.bottom), Point(rect.right, rect.top)
+
+        # Lower left case - light below and left of the shadow tile casting a shadow to the upper right
+        # logger.debug("Lower left")
+        return Point(rect.left, rect.top), Point(rect.right, rect.bottom), Point(rect.left, rect.bottom)
+
+    def get_shadow_tile_rects(self, tiles: list[list[int]], x_px: int, y_px: int) -> list[pygame.Rect]:
+        """From the shadow tiles, get rect of each shadow tile within in the range of this light."""
+        shadow_tile_rects = []
 
         light_rect = pygame.Rect(x_px - self.radius_px, y_px - self.radius_px, self.size_px, self.size_px)
         h = len(tiles)
@@ -212,71 +284,32 @@ class Light:
         for y in range(h):
             for x in range(w):
                 if tiles[y][x]:
-                    tile_rect = pygame.Rect(x*tile_size_px, y*tile_size_px, tile_size_px, tile_size_px)
+                    tile_rect = pygame.Rect(x * tile_size_px, y * tile_size_px, tile_size_px, tile_size_px)
                     if light_rect.colliderect(tile_rect):
-                        #shadow_tile_rects.append(tile_rect)
-                        points.append(
-                            # Could just as well append tile_rect here!
-                            CornerCoords(
-                                Point(x * tile_size_px + tile_size_px, y * tile_size_px),
-                                Point(x * tile_size_px, y * tile_size_px),
-                                Point(x * tile_size_px, y * tile_size_px + tile_size_px),
-                                Point(x * tile_size_px + tile_size_px, y * tile_size_px + tile_size_px),
-                            )
-                        )
+                        shadow_tile_rects.append(tile_rect)
 
-        return points
-        #return shadow_tile_rects
+        # logger.debug("shadow_tile_rects found %s tiles", len(shadow_tile_rects))
+        return shadow_tile_rects
 
-    def pixel_shader(self) -> pygame.surface.Surface:
-        final_array = np.full(
-            (self.size_px, self.size_px, 3), (self.color.r, self.color.g, self.color.b), dtype=np.float64
-        )
-
-        # Grid -----
-        x, y = np.meshgrid(np.arange(self.size_px), np.arange(self.size_px))
-        x = x.astype(np.float64)
-        y = y.astype(np.float64)
-        # -----
-
-        # Radial -----
-        distance = np.sqrt((x - self.radius_px) ** 2 + (y - self.radius_px) ** 2)
-        radial_falloff = (self.radius_px - distance) * (1 / self.radius_px)
-        radial_falloff[radial_falloff <= 0] = 0
-        # -----
-
-        # Angular -----
-        if self.is_point:
-            point_angle = (180 / np.pi) * -np.arctan2((self.radius_px - x), (self.radius_px - y)) + 180
-            diff_angle = np.abs(((self.angle - point_angle) + 180) % 360 - 180)
-            angular_falloff = ((self.angle_width_deg / 2) - diff_angle) * (1 / self.angle_width_deg)
-            angular_falloff[angular_falloff <= 0] = 0
-        else:
-            angular_falloff = 1
-        # -----
-
-        final_intensity = radial_falloff * angular_falloff * self.intensity
-        final_array *= final_intensity[..., np.newaxis]
-
-        return pygame.surfarray.make_surface(final_array.astype(np.uint8))
-
-    def check_cast(self, points: CornerCoords, dx: int, dy: int) -> bool:
-        render = False
-
-        if self.is_point:
-            for point in points:
-
+    def check_cast(self, shadow_tile_rect: pygame.Rect) -> bool:
+        """If the rect is fully in shadow, return True indicating this shadow tile can be ignored."""
+        if False and self.is_point:
+            # Disabled as this logic will miss a narrow bean going through a tile but not hitting its corners!!!
+            for point in [
+                (shadow_tile_rect.right, shadow_tile_rect.top),
+                (shadow_tile_rect.left, shadow_tile_rect.top),
+                (shadow_tile_rect.left, shadow_tile_rect.bottom),
+                (shadow_tile_rect.right, shadow_tile_rect.bottom),
+            ]:
                 try:
-                    color = self.pixel_shader_surf.get_at((point.x - dx, point.y - dy))
-                except:
-                    color = pygame.Color(0, 0, 0, 255)
-
-                render = color.rgba != (0, 0, 0, 255)
-
-        else:
-            render = True
-
-        return render
+                    c = self.pixel_shader_surf.get_at(point)
+                    logger.debug(f"point={point}; c={c}; c!=(0, 0, 0, 255)={c!=(0, 0, 0, 255)}")
+                    if self.pixel_shader_surf.get_at(point) != (0, 0, 0, 255):
+                        return True
+                except IndexError:
+                    pass
+            return False
+        return True
 
     def add_light(
         self, light_surface: pygame.surface.Surface, shadow_tiles: list[list[int]], x_px: int, y_px: int
@@ -284,26 +317,26 @@ class Light:
 
         self.render_surface.fill((0, 0, 0))
         self.render_surface.blit(self.pixel_shader_surf, (0, 0))
-        radius_pt = Point(self.radius_px, self.radius_px)
 
-        dx, dy = x_px - self.radius_px, y_px - self.radius_px
+        dx = x_px - self.radius_px
+        dy = y_px - self.radius_px
 
-        for point in self.get_tiles(shadow_tiles, x_px, y_px):
+        for shadow_tile_rect in self.get_shadow_tile_rects(shadow_tiles, x_px, y_px):
+            # Shift the rect to be in the coordinate system of self.render_surface
+            shadow_tile_rect.x -= dx
+            shadow_tile_rect.y -= dy
 
-            if self.check_cast(point, dx, dy):
-
-                corners = self.get_corners(point, x_px, y_px)
-                corners = (
-                    Point(corners[0].x - dx, corners[0].y - dy),
-                    Point(corners[1].x - dx, corners[1].y - dy),
-                    Point(corners[2].x - dx, corners[2].y - dy),
-                )
+            if self.check_cast(shadow_tile_rect):
+                corners = self.get_corners(shadow_tile_rect)
+                if corners is None:
+                    # Light is inside the shadow tile
+                    return
                 self.fill_shadows(
                     self.render_surface,
                     corners[0],
                     corners[1],
-                    self.get_intersection(radius_pt, corners[1]),
-                    self.get_intersection(radius_pt, corners[0]),
+                    self.get_intersection(corners[1]),
+                    self.get_intersection(corners[0]),
                     corners[2],
                 )
 
@@ -332,6 +365,25 @@ class Map:
             [1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1],
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         ]
+        """
+        self.tiles = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ]
+        """
 
         # Same si
         self.shadow_tiles = copy.deepcopy(self.tiles)
