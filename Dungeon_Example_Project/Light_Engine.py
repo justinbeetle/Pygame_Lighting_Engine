@@ -79,9 +79,18 @@ class Light:
         self.render_surface = pygame.Surface((self.size_px, self.size_px))
         self.color = color
         self.intensity = intensity
+        self.is_point = is_point
         self.angle = angle_deg
         self.angle_width_deg = angle_width_deg
-        self.is_point = is_point
+        if self.is_point:
+            self.beam_line = (
+                self.radius_px,
+                self.radius_px,
+                self.radius_px + self.radius_px * math.cos(math.radians(self.angle)),
+                self.radius_px - self.radius_px * math.sin(math.radians(self.angle)),
+            )
+        else:
+            self.beam_line = None
         self.pixel_shader_surf = self.pixel_shader()
         self.render_surface.set_colorkey((0, 0, 0))
 
@@ -261,7 +270,7 @@ class Light:
         light_rect = pygame.Rect(x_px - self.radius_px, y_px - self.radius_px, self.size_px, self.size_px)
         filtered = []
         for shadow_rect in shadow_rects:
-            if shadow_rect.height == 0 and light_rect.clipline(
+            if (shadow_rect.height == 0 or shadow_rect.width == 0) and light_rect.clipline(
                 shadow_rect.left, shadow_rect.top, shadow_rect.right, shadow_rect.bottom
             ):
                 filtered.append(shadow_rect)
@@ -271,17 +280,21 @@ class Light:
 
     def check_cast(self, shadow_tile_rect: pygame.Rect) -> bool:
         """If the rect is fully in shadow, return True indicating this shadow tile can be ignored."""
-        if False and self.is_point:
-            # Disabled as this logic will miss a narrow bean going through a tile but not hitting its corners!!!
+        if self.is_point:
+            if shadow_tile_rect.clipline(self.beam_line):
+                # Center of beam collides with this rectangle.
+                return True
             for point in [
                 (shadow_tile_rect.right, shadow_tile_rect.top),
                 (shadow_tile_rect.left, shadow_tile_rect.top),
                 (shadow_tile_rect.left, shadow_tile_rect.bottom),
                 (shadow_tile_rect.right, shadow_tile_rect.bottom),
             ]:
+                # Center of beam doesn't touch the tile but its light may still hit it depending on
+                # beam width.  Check if any of the coorner coordinates are lit by the beam.
                 try:
                     c = self.pixel_shader_surf.get_at(point)
-                    logger.debug(f"point={point}; c={c}; c!=(0, 0, 0, 255)={c!=(0, 0, 0, 255)}")
+                    # logger.debug(f"point={point}; c={c}; c!=(0, 0, 0, 255)={c!=(0, 0, 0, 255)}")
                     if self.pixel_shader_surf.get_at(point) != (0, 0, 0, 255):
                         return True
                 except IndexError:
@@ -492,15 +505,14 @@ def screen_to_display_coords(pos_px: tuple[int, int]) -> tuple[int, int]:
     return pos_px[0] // scale_factor, pos_px[1] // scale_factor
 
 
-last_mouse_x_px: Optional[int] = None
-last_mouse_y_px: Optional[int] = None
-last_diff_mouse_x_px: Optional[int] = None
-last_diff_mouse_y_px: Optional[int] = None
-directional_mouse_light: Optional[Light] = None
+enable_directional_light = True
+directional_light_angle_deg = 0
+frames_until_direction_light_rotate = 10
+frames_until_direction_light_rotate_remaining = frames_until_direction_light_rotate
+directional_mouse_lights: list[Light] = []
 non_directional_mouse_light = Light(75, pygame.Color(255, 185, 9), 1, False)
 light_surface = pygame.Surface((display.get_size()))
 is_running = True
-enable_directional_light = True
 while is_running:
     display.fill((0, 0, 0))
 
@@ -535,19 +547,30 @@ while is_running:
     mouse_x_px, mouse_y_px = screen_to_display_coords(pygame.mouse.get_pos())
     non_directional_mouse_light.add_light(light_surface, world.shadow_rects, mouse_x_px, mouse_y_px)
     if enable_directional_light:
-        if last_mouse_x_px is None or last_mouse_y_px is None:
-            last_mouse_x_px, last_mouse_y_px = mouse_x_px, mouse_y_px
-        if (mouse_x_px, mouse_y_px) != (last_mouse_x_px, last_mouse_y_px):
-            last_diff_mouse_x_px, last_diff_mouse_y_px = last_mouse_x_px, last_mouse_y_px
-        if last_diff_mouse_x_px is not None and last_diff_mouse_y_px is not None:
-            angle_deg = math.atan2(last_diff_mouse_y_px - mouse_y_px, mouse_x_px - last_diff_mouse_x_px) * 180 / np.pi
-            directional_mouse_light = Light(150, pygame.Color(255, 255, 255), 1, True, angle_deg, 10)
-        if directional_mouse_light is not None:
+        if 0 == len(directional_mouse_lights) or 0 == frames_until_direction_light_rotate_remaining:
+            if 0 == frames_until_direction_light_rotate_remaining:
+                directional_light_angle_deg = (directional_light_angle_deg + 1) % 360
+                frames_until_direction_light_rotate_remaining = frames_until_direction_light_rotate
+            directional_mouse_lights.clear()
+            directional_mouse_lights.append(
+                Light(150, pygame.Color(255, 255, 255), 1, True, directional_light_angle_deg, 45)
+            )
+            directional_mouse_lights.append(
+                Light(150, pygame.Color(255, 0, 0), 1, True, (directional_light_angle_deg + 90) % 360, 5)
+            )
+            directional_mouse_lights.append(
+                Light(150, pygame.Color(0, 255, 0), 1, True, (directional_light_angle_deg + 180) % 360, 10)
+            )
+            directional_mouse_lights.append(
+                Light(150, pygame.Color(0, 0, 255), 1, True, (directional_light_angle_deg + 270) % 360, 14)
+            )
+        else:
+            frames_until_direction_light_rotate_remaining -= 1
+        for directional_mouse_light in directional_mouse_lights:
             directional_mouse_light.add_light(light_surface, world.shadow_rects, mouse_x_px, mouse_y_px)
-        last_mouse_x_px, last_mouse_y_px = mouse_x_px, mouse_y_px
 
     for map_light in map_lights:
-        map_light.light.add_light(light_surface, world.shadow_tiles, map_light.x_px, map_light.y_px)
+        map_light.light.add_light(light_surface, world.shadow_rects, map_light.x_px, map_light.y_px)
         display.blit(tile_textures[90], (map_light.x_px - tile_size_px // 2, map_light.y_px - tile_size_px // 2))
 
     display.blit(light_surface, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
